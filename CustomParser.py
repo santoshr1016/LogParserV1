@@ -1,67 +1,84 @@
 # Author: R Santosh
-# Ecexute: python CustomParser.py -l Logs
+# Ecexute: python CustomParser.py
 # Objective:
 # 1.Reading each file the Logs folder and collection the Swift Object
 # 2.Calculating the md5 digest of the object and then
 # 3.Storing the log filename and Digest in dictionary
 # 4.The dictionary is parsed and indexed for the Elastic Search
 
-
-import os.path
-import sys
-import argparse
-import hashlib
-from datetime import datetime
 from elasticsearch import Elasticsearch
 from elasticsearch import helpers
+from hashlib import md5
 
 es = Elasticsearch()
 
 
-def process_file(logfile):
-    print "*********************" + logfile + "*******************"
-    myList = []
-    with open(logfile) as lf:
-        for line in lf:
-            if '404' in line:
-                myList.append(line)
-
-    # var = myList[0].split()
-    # for i, j in enumerate(var):
-    #     print i, j
-    # print myList
-    myDict = dict()
-    for item in myList:
-        line = item.split()
-        # print logfile + "--->" + line[9]
-        object_key = hashlib.md5(line[9]).hexdigest()
-        myDict[object_key] = logfile
-
-    # print myDict
-    return myDict
+def get_logs():
+    """ This is just a mock, no need to make it complex"""
+    return ["Logs/log{}.txt".format(i) for i in range(1, 5)]
 
 
-if __name__ =="__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-l", "--Logs", required=True, help="Path to the Logs folder")
-    args = vars(ap.parse_args())
-    list_of_files = []
+def filter_logs(logs):
+    """ A generator that yields a es formatted dictionary for matching lines
+    
+    :param logs: A list of log files to process
+    """
+    for log in logs:
+        with open(log) as lf:
+            for i, ln in enumerate(lf):
+                try:
+                    verb, obj, _, status = ln.split()[8:12]
+                except ValueError:
+                    continue  # If it cannot unpack the vars, it's not a valid line anyways.
 
-    for dirname, subdir, filenames in os.walk(args["Logs"]):
-        for filename in os.listdir(dirname):
-            if filename.endswith(".txt"):
-                abs_path = "%s/%s" % (dirname, filename)
-                list_of_files.append(abs_path)
+                if verb in ("PUT", "DELETE") and status == "404":
+                    yield dict(verb=verb,
+                               origin="{}:{}".format(log, i + 1),
+                               obj=md5(obj[4:]).hexdigest(),
+                               status=status,
+                               _index="support-logs",
+                               _type="log")
 
-    for item in list_of_files:
-        dict_body = process_file(item)
-        idx = 1
 
-        for k, v in dict_body.iteritems():
-            # for each key-value pair, store it as a field and string inside the specified index of elastic search.
-            doc = {
-                k: v
-            }
-            res = es.index(index='test-index', doc_type='swiftlog', id=idx, body=doc)
-            print(res)
-        idx += 1
+def send_to_es(bulk_data):
+    es.indices.create(index='support-logs', ignore=400)
+    helpers.bulk(es, bulk_data)
+    print("bulk update complete")
+
+
+def reset_es_index():
+    """ Use to quickly clear all data from the es index"""
+    es.indices.delete(index='support-logs', ignore=[400, 404])
+
+
+def get_full_line(origin):
+    """ Takes the origin result from es and finds the full value of the log line"""
+    location, line = origin.split(":")
+    with open(location, 'r') as f:
+        for i, l in enumerate(f):
+            if i == int(line) + 1:
+                return l
+
+
+def find_by_obj(obj):
+    """ Gets results for a given swift object
+    
+    example: find_by_obj("AUTH_test/bucket/transport.js")
+    
+    :type obj: str
+    :param obj: The full path of the object -- in the form of: ACCOUNT/CONTAINER/OBJECT
+    :return: list of matching log lines
+    """
+
+    if obj.startswith("/v1/"):
+        obj = obj[4:]
+
+    res = es.search(index='support-logs', doc_type="log", body={"query": {"match": {"obj": md5(obj).hexdigest()}}})
+    print("Found {} result(s)".format(res['hits']['total']))
+
+    return [get_full_line(doc['_source']['origin']) for doc in res['hits']['hits']]
+
+
+if __name__ == "__main__":
+    log_matches = filter_logs(get_logs())
+    send_to_es(bulk_data=log_matches)
