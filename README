@@ -2,3 +2,8 @@ How to run
 python CustomParser.py -l Logs
 
 Logs folder contains the many log files.
+# Objective:
+# 1.Reading each file the Logs folder and collection the Swift Object
+# 2.Calculating the md5 digest of the object and then
+# 3.Storing the log filename and Digest in dictionary
+# 4.The dictionary is parsed and indexed for the Elastic Search
