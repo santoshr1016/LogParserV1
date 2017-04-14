@@ -1,0 +1,4 @@
+How to run
+python CustomParser.py -l Logs
+
+Logs folder contains the many log files.
